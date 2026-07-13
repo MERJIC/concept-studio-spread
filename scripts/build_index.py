@@ -185,14 +185,6 @@ def scan_file(filepath: str) -> Optional[dict]:
     source = fm.get('source', '')
     date = fm.get('date', '')
 
-    persons = []
-    raw_tags = fm.get('tags', [])
-    if isinstance(raw_tags, str):
-        raw_tags = [raw_tags]
-    for tag in raw_tags:
-        if tag.startswith("person/"):
-            persons.append(tag[len("person/"):])
-
     out_links = extract_wikilinks(content)
 
     return {
@@ -202,7 +194,6 @@ def scan_file(filepath: str) -> Optional[dict]:
         "domain": domain,
         "discipline": tags["discipline"],
         "apply": tags["apply"],
-        "persons": persons,
         "source": source,
         "date": date,
         "out_links": out_links,
@@ -457,7 +448,6 @@ def build_output(nodes: dict, paths: dict, incremental: bool = False) -> dict:
                 "source": node["source"],
                 "date": node["date"],
                 "domain": node["domain"],
-                "persons": node["persons"],
             }
             for name, node in nodes.items()
         },
@@ -477,6 +467,20 @@ def write_outputs(output: dict, paths: dict):
             json.dump(output[key], f, ensure_ascii=False, indent=2)
         size = os.path.getsize(path)
         print(f"  ✅ {os.path.relpath(path, paths['root'])} ({size:,} bytes)")
+
+
+def build_incremental_index() -> dict:
+    """供 sync_db 调用的兼容入口。
+
+    入链、孤立节点和连通分量依赖全库视图，因此完整扫描概念页，避免只把
+    变动节点写入 JSON 后覆盖原索引。
+    """
+    paths = get_paths(resolve_root())
+    nodes = scan_directory(paths["concept_dir"], incremental=False)
+    output = build_output(nodes, paths, incremental=True)
+    output["meta"]["total_concepts"] = len(nodes)
+    write_outputs(output, paths)
+    return output
 
 
 def _load_aliases(aliases_path: str) -> dict:
@@ -573,15 +577,12 @@ def main():
         return
 
     incremental = args.incremental
-    existing_mtime = None
-    if incremental:
-        existing_mtime = get_existing_mtime(paths["meta"])
-
     print(f"概念库根目录: {root}")
     print(f"模式: {'增量' if incremental else '全量'}")
     print()
 
-    nodes = scan_directory(paths["concept_dir"], incremental, existing_mtime)
+    # 派生图数据依赖全库视图。--incremental 保留为兼容入口，当前仍完整扫描。
+    nodes = scan_directory(paths["concept_dir"], incremental=False)
 
     if not nodes:
         print("没有需要处理的文件。")

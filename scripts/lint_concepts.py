@@ -33,12 +33,11 @@ from _common import (
     parse_frontmatter,
 )
 
-# F09 学者短名自动替换默认关闭（见 --fix-scholars）；工具函数见 scholar_annotation_utils.py
-from scholar_annotation_utils import (  # noqa: E402
+# F09 学者名标注修复工具
+from _common import (  # noqa: E402
     build_short_unsafe,
-    find_safe_short_positions,
     load_scholar_dict as _load_scholar_dict_util,
-    short_match_is_safe,
+    PROTECTED_PHRASES,
 )
 
 # ── lint 专用常量（不在公共模块中） ────────────────────────
@@ -86,6 +85,44 @@ SHALLOW_ENDINGS = ["突出", "彰显", "反映", "象征"]
 def load_scholar_dict() -> dict:
     """加载学者对照表。"""
     return _load_scholar_dict_util()
+
+
+# ── F09 学者名安全替换辅助函数 ──
+
+def short_match_is_safe(
+    body: str, start: int, end: int,
+    short_name: str, full_name: str,
+    scholar_dict: dict, short_unsafe: set,
+) -> bool:
+    if short_name in short_unsafe:
+        return False
+    for phrase in PROTECTED_PHRASES:
+        for pm in re.finditer(re.escape(phrase), body):
+            if pm.start() <= start < pm.end():
+                return False
+    for info in scholar_dict.values():
+        ofull = info["full"]
+        for om in re.finditer(re.escape(ofull), body):
+            if om.start() <= start < om.end():
+                return False
+    if end < len(body) and body[end] == "（":
+        return False
+    if start > 0 and body[start - 1] == "（":
+        return False
+    return True
+
+
+def find_safe_short_positions(
+    body: str, short_name: str, full_name: str,
+    scholar_dict: dict, short_unsafe: set,
+) -> list:
+    positions = []
+    for m in re.finditer(re.escape(short_name), body):
+        if short_match_is_safe(
+            body, m.start(), m.end(), short_name, full_name, scholar_dict, short_unsafe
+        ):
+            positions.append(m.start())
+    return positions
 
 
 # parse_frontmatter 已从 _common 导入，此处不再重复定义
@@ -178,7 +215,7 @@ def check_file(
 
         # 检查未知前缀
         for tag in tags:
-            if tag.startswith(("discipline/", "apply/", "person/")):
+            if tag.startswith(("discipline/", "apply/")):
                 continue
             if tag:
                 issues.append({
@@ -206,17 +243,6 @@ def check_file(
                     issues.append({
                         "rule": "F03", "concept": concept_name,
                         "msg": f"apply/{val} 不在词汇表内",
-                        "fixable": False,
-                    })
-
-        # 检查 person/ 标签是否为纯中文（禁止英文/下划线格式）
-        for tag in tags:
-            if tag.startswith("person/"):
-                val = tag[len("person/"):]
-                if re.search(r'[A-Za-z]', val):
-                    issues.append({
-                        "rule": "F03", "concept": concept_name,
-                        "msg": f"person/{val} 包含英文字符，标签值必须使用中文",
                         "fixable": False,
                     })
 
@@ -504,6 +530,27 @@ def check_file(
     # 检查弯引号 ''（单引号变体）
     curly_single_left = len(re.findall(r"'", body))
     # 不报告单引号，因为在英语人名中会用到
+
+    # ── 13. 学者名格式异常检测（F13） ────────────────────────
+    # 检测 AI 生成时产生的人名拼接、嵌套括号、同名混淆等典型错误
+    _f13_checks = [
+        # 括号粘连: 英文字母紧跟右括号再跟右括号（如 Coase）））
+        (r'[A-Za-z]\)\）', '括号粘连（英文名+）））'),
+        # 连续括号: 右括号紧跟左括号，且内容不像合法引用格式
+        (r'[）\)]\s*[（\(]', '连续括号（可能人名拼接）'),
+        # 中文全名内混入英文片段（如 `Erving 欧文·戈夫曼`）
+        (r'[A-Z][a-z]+\s+[一-鿿]+·', '中英混杂全名（英文名混入中文全名）'),
+    ]
+    for pat, desc in _f13_checks:
+        for m in re.finditer(pat, body):
+            line_no = body[:m.start()].count('\n') + 1
+            line_text = body.split('\n')[line_no - 1].strip()[:80]
+            issues.append({
+                "rule": "F13", "concept": concept_name,
+                "msg": f"F13-学者名格式异常: {desc}（第{line_no}行: {line_text}）",
+                "fixable": False,
+            })
+            break  # 每种模式只报告一次
 
     # ── 附加：否定排比检测 ──────────────────────────────────
     for pattern in NEGATION_PAIR_PATTERNS:
@@ -927,6 +974,7 @@ def run_lint(
         "F10": "圆桌嘉宾行格式",
         "F11": "圆桌沉淀格式",
         "F12": "中文引号（弯引号）",
+        "F13": "学者名格式异常（拼接/嵌套/混淆）",
         "S01": "否定排比",
         "E01": "入口场景格式硬伤（空/元描述/跳跃声明开头）",
         "E02": "入口场景匿名占位（疑缺具名人物）",
@@ -962,7 +1010,7 @@ def run_lint(
     elif total_fixable > 0:
         print(
             f"\n提示: python3 scripts/lint_concepts.py --fix 可自动修复非 F09 项；"
-            f"学者标注需加 --fix-scholars（慎用，先跑 repair_scholar_f09_damage.py）"
+            f"学者标注需加 --fix-scholars（慎用，先备份并配合 --file 小范围执行）"
         )
 
 

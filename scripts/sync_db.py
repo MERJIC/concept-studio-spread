@@ -40,6 +40,7 @@ from _common import (
     GRAPH_PATH,
     META_PATH,
     ALIASES_PATH,
+    PROTECTED_PHRASES,
     parse_frontmatter,
     extract_english_name,
     extract_wikilinks,
@@ -47,20 +48,13 @@ from _common import (
     parse_relations_clusters,
     iter_concept_files,
     load_scholar_dict,
+    build_short_unsafe,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
-
-# Scholar annotation
-try:
-    from scholar_tagger import annotate_file as annotate_scholar_file
-    from scholar_annotation_utils import build_short_unsafe
-except ImportError:
-    annotate_scholar_file = None
-    build_short_unsafe = None
 
 # ── Schema 版本 ───────────────────────────────────────────
 SCHEMA_VERSION = 1
@@ -101,16 +95,7 @@ def detect_link_context(content: str, target: str) -> str:
 
 
 _SCHOLAR_DICT = load_scholar_dict()
-_SHORT_UNSAFE = build_short_unsafe(_SCHOLAR_DICT) if build_short_unsafe and _SCHOLAR_DICT else set()
-
-
-def _annotate_scholars_if_needed(filepath: str) -> bool:
-    if not annotate_scholar_file or not _SCHOLAR_DICT:
-        return False
-    try:
-        return annotate_scholar_file(filepath, _SCHOLAR_DICT, _SHORT_UNSAFE)
-    except Exception:
-        return False
+_SHORT_UNSAFE = build_short_unsafe(_SCHOLAR_DICT) if _SCHOLAR_DICT else set()
 
 
 # ══════════════════════════════════════════════════════════
@@ -153,7 +138,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             disciplines     TEXT NOT NULL DEFAULT '[]',
             pattern         TEXT DEFAULT NULL,  -- 已废弃，保留列不删除，新数据置 NULL
             applies         TEXT NOT NULL DEFAULT '[]',
-            persons         TEXT NOT NULL DEFAULT '[]',
             filepath        TEXT NOT NULL UNIQUE,
             file_mtime      REAL NOT NULL DEFAULT 0,
             body_word_count INTEGER NOT NULL DEFAULT 0,
@@ -248,6 +232,29 @@ def init_db(conn: sqlite3.Connection) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concepts_source ON concepts(source)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concepts_date ON concepts(date)")
 
+    # ── 学者索引表 ──
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scholars (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name    TEXT NOT NULL UNIQUE,
+            en_name      TEXT NOT NULL DEFAULT '',
+            short_name   TEXT NOT NULL DEFAULT '',
+            concept_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scholar_mentions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            scholar_id    INTEGER NOT NULL REFERENCES scholars(id) ON DELETE CASCADE,
+            concept_id    INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+            is_core       INTEGER NOT NULL DEFAULT 0,
+            mention_count INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(scholar_id, concept_id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sm_scholar ON scholar_mentions(scholar_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sm_concept ON scholar_mentions(concept_id)")
+
     # 写入 schema 版本
     cursor.execute(
         "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('schema_version', ?)",
@@ -328,7 +335,6 @@ def scan_one_file(filepath: str) -> Optional[dict]:
         "tags": tags_raw if isinstance(tags_raw, list) else [tags_raw],
         "disciplines": parsed_tags["discipline"],
         "applies": parsed_tags["apply"],
-        "persons": parsed_tags["persons"],
         "source": source,
         "date": date,
         "filepath": rel_path,
@@ -354,9 +360,9 @@ def upsert_concept(conn: sqlite3.Connection, data: dict) -> int:
     cursor.execute("""
         INSERT INTO concepts (
             name, name_en, domains, date, source, tags,
-            disciplines, pattern, applies, persons,
+            disciplines, pattern, applies,
             filepath, file_mtime, body_word_count, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
             name_en       = excluded.name_en,
             domains       = excluded.domains,
@@ -366,7 +372,6 @@ def upsert_concept(conn: sqlite3.Connection, data: dict) -> int:
             disciplines   = excluded.disciplines,
             pattern       = NULL,
             applies       = excluded.applies,
-            persons       = excluded.persons,
             filepath      = excluded.filepath,
             file_mtime    = excluded.file_mtime,
             body_word_count = excluded.body_word_count,
@@ -376,7 +381,6 @@ def upsert_concept(conn: sqlite3.Connection, data: dict) -> int:
         data["date"], data["source"], json.dumps(data["tags"], ensure_ascii=False),
         json.dumps(data["disciplines"], ensure_ascii=False), None,
         json.dumps(data["applies"], ensure_ascii=False),
-        json.dumps(data["persons"], ensure_ascii=False),
         data["filepath"], data["mtime"], data["word_count"], data["now"],
     ))
 
@@ -434,15 +438,330 @@ def _refresh_json_index() -> dict:
         return {"ok": False, "reason": str(e)}
 
 
-def _refresh_index_person_section() -> dict:
-    """刷新 INDEX.md 中的 person 标签分组。"""
+# ══════════════════════════════════════════════════════════
+#  学者索引：直接扫描概念页正文 → SQLite
+# ══════════════════════════════════════════════════════════
+
+_SCHOLAR_CORE_KEYWORDS = [
+    "提出", "系统提出", "系统讨论", "系统阐述", "核心贡献", "认为……是",
+    "其核心在于", "奠定了", "开创了", "发展了", "系统化",
+    "关键在于", "本质是", "标志着", "代表了",
+]
+_SCHOLAR_CONTEXT_WINDOW = 80
+
+
+def _scholar_extract_sections(body: str) -> Dict[str, str]:
+    """将正文拆分为 section 名 → 文本的映射。"""
+    sections: Dict[str, str] = {}
+    for m in re.finditer(r"^##\s+(.+?)\s*$", body, re.MULTILINE):
+        section_name = m.group(1).strip()
+        start = m.end()
+        next_m = re.search(r"^##\s+", body[start:], re.MULTILINE)
+        end = start + next_m.start() if next_m else len(body)
+        sections[section_name] = body[start:end]
+    if not sections:
+        sections["正文"] = body
+    return sections
+
+
+def _scholar_is_in_link_or_book(text: str, match_start: int, match_end: int) -> bool:
+    """检查匹配位置是否在 [[]] 链接或《》书名内。"""
+    before = text[:match_start]
+    if before.count("[[") > before.count("]]"):
+        after = text[match_end:]
+        if "]]" in after[:50]:
+            return True
+    before_tail = before[-20:] if len(before) > 20 else before
+    if "《" in before_tail and "》" not in before_tail:
+        after_head = text[match_end:match_end + 50]
+        if "》" in after_head:
+            return True
+    return False
+
+
+def _scholar_check_is_core(section_name: str, section_text: str,
+                           match_start_in_section: int) -> bool:
+    """判定学者名出现在核心机制 section + 关键词窗口内。"""
+    if section_name != "核心机制":
+        return False
+    start = max(0, match_start_in_section - _SCHOLAR_CONTEXT_WINDOW)
+    end = min(len(section_text), match_start_in_section + _SCHOLAR_CONTEXT_WINDOW)
+    window = section_text[start:end]
+    return any(kw in window for kw in _SCHOLAR_CORE_KEYWORDS)
+
+
+def _scholar_find_mentions(body: str) -> Dict[str, Tuple[int, List[str], bool]]:
+    """
+    扫描概念页正文，返回 {display_name: (mention_count, sections, is_core)}。
+    """
+    if not _SCHOLAR_DICT:
+        return {}
+
+    sections = _scholar_extract_sections(body)
+    full_text = body
+
+    # section 位置偏移
+    section_offsets: List[Tuple[str, int, int]] = []
+    offset = 0
+    for sec_name, sec_text in sections.items():
+        sec_start = body.find(sec_text, offset)
+        if sec_start == -1:
+            sec_start = offset
+        sec_end = sec_start + len(sec_text)
+        section_offsets.append((sec_name, sec_start, sec_end))
+        offset = sec_end
+
+    results: Dict[str, Tuple[int, List[str], bool]] = {}
+
+    for dict_key, info in _SCHOLAR_DICT.items():
+        full_name = info.get("full", dict_key)
+        short = info.get("short", full_name)
+
+        search_names = [full_name]
+        if short != full_name and short not in _SHORT_UNSAFE:
+            search_names.append(short)
+
+        total_count = 0
+        found_sections: Set[str] = set()
+        is_core = False
+        seen_spans: List[Tuple[int, int]] = []
+
+        for name in search_names:
+            for m in re.finditer(re.escape(name), full_text):
+                if _scholar_is_in_link_or_book(full_text, m.start(), m.end()):
+                    continue
+                # 跳过 frontmatter 区域
+                fm_end = body.find("---", body.find("---") + 3)
+                if fm_end != -1 and m.start() < fm_end + 3:
+                    continue
+                # 跳过与已有匹配重叠的位置
+                overlap = False
+                for s, e in seen_spans:
+                    if not (m.end() <= s or m.start() >= e):
+                        overlap = True
+                        break
+                if overlap:
+                    continue
+
+                seen_spans.append((m.start(), m.end()))
+                total_count += 1
+
+                for sec_name, sec_start, sec_end in section_offsets:
+                    if sec_start <= m.start() < sec_end:
+                        found_sections.add(sec_name)
+                        if not is_core:
+                            offset_in_section = m.start() - sec_start
+                            is_core = _scholar_check_is_core(
+                                sec_name, sections[sec_name], offset_in_section
+                            )
+                        break
+
+        if total_count > 0:
+            display_name = short if short not in _SHORT_UNSAFE else full_name
+            results[display_name] = (total_count, sorted(found_sections), is_core)
+
+    return results
+
+
+def _refresh_scholar_index() -> dict:
+    """扫描概念页正文，直接写入 SQLite scholars/scholar_mentions 表。"""
+    if not _SCHOLAR_DICT:
+        return {"ok": False, "reason": "scholar-dict.json 为空"}
+
     try:
-        from update_index_person_section import refresh_index_person_section
-        return refresh_index_person_section()
-    except ImportError:
-        return {"ok": False, "reason": "update_index_person_section 模块不存在"}
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # 清空旧数据
+        cursor.execute("DELETE FROM scholar_mentions")
+        cursor.execute("DELETE FROM scholars")
+
+        # 临时存储：scholar_name -> {info, concepts}
+        scholar_accum: Dict[str, dict] = {}
+
+        for fname in sorted(os.listdir(CONCEPT_DIR)):
+            if not fname.endswith(".md") or fname == "INDEX.md":
+                continue
+            fpath = os.path.join(CONCEPT_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            fm = parse_frontmatter(content)
+            if not fm:
+                continue
+
+            # 概念名（去掉英文括号，与 concepts 表一致）
+            concept_name_raw = str(fm.get("name", fname[:-3]))
+            concept_name = re.sub(r"（[^）]*）$", "", concept_name_raw).strip()
+
+            # 正文
+            body_start = content.find("---", content.find("---") + 3)
+            if body_start == -1:
+                body_start = 0
+            else:
+                body_start += 3
+            body = content[body_start:].strip()
+
+            mentions = _scholar_find_mentions(body)
+
+            for display_name, (count, sections, is_core) in mentions.items():
+                # 从 scholar_dict 获取完整信息
+                scholar_info = None
+                for dict_key, info in _SCHOLAR_DICT.items():
+                    sn = info.get("short", info["full"])
+                    if sn == display_name or info["full"] == display_name:
+                        scholar_info = info
+                        break
+                if not scholar_info:
+                    continue
+
+                if display_name not in scholar_accum:
+                    scholar_accum[display_name] = {
+                        "full": scholar_info["full"],
+                        "en": scholar_info["en"],
+                        "short": scholar_info.get("short", display_name),
+                        "concepts": [],
+                    }
+
+                scholar_accum[display_name]["concepts"].append({
+                    "name": concept_name,
+                    "file": fname,
+                    "is_core": is_core,
+                    "mention_count": count,
+                })
+
+        # 写入 scholars 表
+        for display_name, data in scholar_accum.items():
+            concept_count = len(data["concepts"])
+            cursor.execute(
+                "INSERT OR IGNORE INTO scholars (full_name, en_name, short_name, concept_count) VALUES (?, ?, ?, ?)",
+                (data["full"], data["en"], data["short"], concept_count),
+            )
+
+        # 写入 scholar_mentions 表
+        for display_name, data in scholar_accum.items():
+            cursor.execute("SELECT id FROM scholars WHERE short_name = ?", (data["short"],))
+            row = cursor.fetchone()
+            if not row:
+                continue
+            scholar_id = row[0]
+
+            for concept in data["concepts"]:
+                cursor.execute("SELECT id FROM concepts WHERE name = ?", (concept["name"],))
+                concept_row = cursor.fetchone()
+                if not concept_row:
+                    continue
+                concept_id = concept_row[0]
+
+                cursor.execute(
+                    "INSERT OR IGNORE INTO scholar_mentions (scholar_id, concept_id, is_core, mention_count) VALUES (?, ?, ?, ?)",
+                    (scholar_id, concept_id, 1 if concept["is_core"] else 0, concept["mention_count"]),
+                )
+
+        conn.commit()
+
+        return {"ok": True, "scholars": len(scholar_accum)}
     except Exception as e:
         return {"ok": False, "reason": str(e)}
+
+
+def _run_scholar_query(conn: sqlite3.Connection, mode: str, query: str) -> None:
+    """执行学者查询。"""
+    if mode == "scholar":
+        sql = """
+            SELECT s.short_name AS 学者, c.name AS 概念,
+                   CASE WHEN sm.is_core THEN '★' ELSE '' END AS 核心,
+                   sm.mention_count AS 次数
+            FROM scholar_mentions sm
+            JOIN scholars s ON s.id = sm.scholar_id
+            JOIN concepts c ON c.id = sm.concept_id
+            WHERE s.short_name = ? OR s.full_name LIKE ? OR s.en_name LIKE ?
+            ORDER BY sm.is_core DESC, sm.mention_count DESC
+        """
+        params = [query, f"%{query}%", f"%{query}%"]
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        if not rows:
+            print(f"未找到学者「{query}」的关联概念")
+            return
+        # 逐行打印，合并同名学者
+        print(f"学者「{rows[0][0]}」关联概念 ({len(rows)} 个):")
+        print(f"  {'概念':<30} {'核心':>4} {'次数':>4}")
+        print(f"  {'─'*30} {'─'*4} {'─'*4}")
+        for row in rows:
+            core = row[2]
+            print(f"  {row[1]:<30} {core:>4} {row[3]:>4}")
+
+    elif mode == "scholar-in":
+        sql = """
+            SELECT s.short_name AS 学者,
+                   CASE WHEN sm.is_core THEN '★' ELSE '' END AS 核心,
+                   sm.mention_count AS 次数
+            FROM scholar_mentions sm
+            JOIN scholars s ON s.id = sm.scholar_id
+            JOIN concepts c ON c.id = sm.concept_id
+            WHERE c.name = ?
+            ORDER BY sm.is_core DESC, sm.mention_count DESC
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql, (query,))
+        rows = cursor.fetchall()
+        if not rows:
+            print(f"未找到概念「{query}」的关联学者")
+            return
+        print(f"概念「{query}」关联学者 ({len(rows)} 个):")
+        print(f"  {'学者':<20} {'核心':>4} {'次数':>4}")
+        print(f"  {'─'*20} {'─'*4} {'─'*4}")
+        for row in rows:
+            print(f"  {row[0]:<20} {row[1]:>4} {row[2]:>4}")
+
+    elif mode == "scholar-top":
+        sql = """
+            SELECT s.short_name AS 学者, COUNT(*) AS 概念数,
+                   SUM(CASE WHEN sm.is_core = 1 THEN 1 ELSE 0 END) AS 核心概念数
+            FROM scholar_mentions sm
+            JOIN scholars s ON s.id = sm.scholar_id
+            GROUP BY s.id
+            ORDER BY 概念数 DESC
+            LIMIT 30
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        print(f"学者排名（按关联概念数 Top {len(rows)}）:")
+        print(f"  {'学者':<20} {'概念数':>5}  {'核心':>5}")
+        print(f"  {'─'*20} {'─'*5}  {'─'*5}")
+        for row in rows:
+            print(f"  {row[0]:<20} {row[1]:>5}  {row[2]:>5}")
+
+    elif mode == "scholar-collisions":
+        sql = """
+            SELECT c.name AS 概念,
+                   GROUP_CONCAT(s.short_name, ', ') AS 共现学者,
+                   COUNT(*) AS 学者数
+            FROM scholar_mentions sm
+            JOIN scholars s ON s.id = sm.scholar_id
+            JOIN concepts c ON c.id = sm.concept_id
+            GROUP BY sm.concept_id
+            HAVING COUNT(*) >= 3
+            ORDER BY COUNT(*) DESC
+            LIMIT 20
+        """
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        print(f"多学者共现概念（≥3 位学者，Top {len(rows)}）:")
+        print(f"  {'概念':<30} {'学者数':>5}  {'学者':<40}")
+        print(f"  {'─'*30} {'─'*5}  {'─'*40}")
+        for row in rows:
+            print(f"  {row[0]:<30} {row[2]:>5}  {row[1]:<40}")
 
 
 def sync_full(conn: sqlite3.Connection) -> dict:
@@ -471,7 +790,6 @@ def sync_full(conn: sqlite3.Connection) -> dict:
 
         scanned += 1
         try:
-            _annotate_scholars_if_needed(fpath)
             data = scan_one_file(fpath)
             if data:
                 upsert_concept(conn, data)
@@ -487,8 +805,7 @@ def sync_full(conn: sqlite3.Connection) -> dict:
 
     # 自动刷新 JSON 索引
     index_result = _refresh_json_index()
-    person_index_result = _refresh_index_person_section()
-
+    scholar_index_result = _refresh_scholar_index()
     elapsed = time.time() - start
 
     return {
@@ -501,7 +818,7 @@ def sync_full(conn: sqlite3.Connection) -> dict:
         "clusters": cluster_count,
         "elapsed": round(elapsed, 3),
         "index_refresh": index_result.get("ok", False),
-        "person_index_refresh": person_index_result.get("ok", False),
+        "scholar_index_refresh": scholar_index_result.get("ok", False),
     }
 
 
@@ -526,14 +843,12 @@ def sync_incremental(conn: sqlite3.Connection) -> dict:
             continue
         fpath = os.path.join(CONCEPT_DIR, fname)
         if os.path.isfile(fpath):
-            annotated = _annotate_scholars_if_needed(fpath)
             rel_path = os.path.relpath(fpath, LIB_ROOT)
             current_files[rel_path] = {
                 "fname": fname,
                 "name_cn": fname[:-3],
                 "mtime": os.path.getmtime(fpath),
                 "fpath": fpath,
-                "annotated": annotated,
             }
 
     # 分类
@@ -545,7 +860,7 @@ def sync_incremental(conn: sqlite3.Connection) -> dict:
         if fpath in db_files:
             db_mtime = db_files[fpath]["mtime"]
             cur_mtime = current_files[fpath]["mtime"]
-            if current_files[fpath].get("annotated") or cur_mtime > db_mtime + 0.001:  # 浮点容差
+            if cur_mtime > db_mtime + 0.001:  # 浮点容差
                 modified.add(fpath)
 
     to_process = added | modified
@@ -581,8 +896,7 @@ def sync_incremental(conn: sqlite3.Connection) -> dict:
         index_result = _refresh_json_index()
     else:
         index_result = {"skipped": True}
-    person_index_result = _refresh_index_person_section()
-
+    scholar_index_result = _refresh_scholar_index()
     elapsed = time.time() - start
 
     return {
@@ -596,7 +910,7 @@ def sync_incremental(conn: sqlite3.Connection) -> dict:
         "clusters": cluster_count,
         "elapsed": round(elapsed, 3),
         "index_refresh": index_result.get("ok", index_result.get("skipped", False)),
-        "person_index_refresh": person_index_result.get("ok", False),
+        "scholar_index_refresh": scholar_index_result.get("ok", False),
     }
 
 
@@ -609,7 +923,6 @@ def sync_single(conn: sqlite3.Connection, concept_name: str) -> dict:
         return {"error": f"文件不存在: {filepath}"}
 
     try:
-        _annotate_scholars_if_needed(filepath)
         data = scan_one_file(filepath)
         if not data:
             return {"error": f"无法解析文件（可能缺少 frontmatter）: {filepath}"}
@@ -620,15 +933,14 @@ def sync_single(conn: sqlite3.Connection, concept_name: str) -> dict:
 
         # 自动刷新 JSON 索引
         index_result = _refresh_json_index()
-        person_index_result = _refresh_index_person_section()
-
+        scholar_index_result = _refresh_scholar_index()
         return {
             "mode": "single",
             "concept": concept_name,
             "id": concept_id,
             "elapsed": round(time.time() - start, 3),
             "index_refresh": index_result.get("ok", False),
-            "person_index_refresh": person_index_result.get("ok", False),
+            "scholar_index_refresh": scholar_index_result.get("ok", False),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -1371,6 +1683,10 @@ def main():
   python3 scripts/sync_db.py --preset orphans     预设查询（orphans/broken/no-domain/recent/...）
   python3 scripts/sync_db.py --duplicates          全库查重
   python3 scripts/sync_db.py -d "候选概念名" "English Name"  查询单个候选
+  python3 scripts/sync_db.py --scholar 康德         查学者关联概念
+  python3 scripts/sync_db.py --scholar-in 先验统一性  查概念的关联学者
+  python3 scripts/sync_db.py --scholar-top           学者排名
+  python3 scripts/sync_db.py --scholar-collisions   多学者共现概念
         """,
     )
 
@@ -1394,6 +1710,14 @@ def main():
                         help="全库内部查重（与 -d 配合或单独使用）")
     parser.add_argument("--set-meta", nargs=2, metavar=("KEY", "VALUE"),
                         help="写入 db_meta 键值对（如 --set-meta last_analysis 2026-06-06）")
+    group.add_argument("--scholar", type=str, metavar="学者名",
+                       help="查询学者关联概念（如 --scholar 康德）")
+    group.add_argument("--scholar-in", type=str, metavar="概念名",
+                       help="查询概念的关联学者（如 --scholar-in 先验统一性）")
+    group.add_argument("--scholar-top", action="store_true",
+                       help="学者排名（按关联概念数 Top 30）")
+    group.add_argument("--scholar-collisions", action="store_true",
+                       help="多学者共现概念（发现争议/继承关系）")
 
     args = parser.parse_args()
 
@@ -1407,6 +1731,14 @@ def main():
             run_preset_queries(conn, args.preset)
         elif args.stats:
             run_stats(conn)
+        elif args.scholar:
+            _run_scholar_query(conn, "scholar", args.scholar)
+        elif args.scholar_in:
+            _run_scholar_query(conn, "scholar-in", args.scholar_in)
+        elif args.scholar_top:
+            _run_scholar_query(conn, "scholar-top", "")
+        elif args.scholar_collisions:
+            _run_scholar_query(conn, "scholar-collisions", "")
         elif args.check:
             run_check(conn)
         elif args.duplicates is not None or args.full_dup:
@@ -1489,9 +1821,9 @@ def _print_sync_result(result: dict) -> None:
     if result.get("clusters") is not None:
         print(f"  集群: {result['clusters']} 个")
 
-    if "person_index_refresh" in result:
-        status = "完成" if result["person_index_refresh"] else "失败"
-        print(f"  人物索引: {status}")
+    if "scholar_index_refresh" in result:
+        status = "完成" if result["scholar_index_refresh"] else "失败"
+        print(f"  学者索引: {status}")
 
     if result.get("errors", 0) > 0:
         print(f"\n⚠ {result['errors']} 个错误:")

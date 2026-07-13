@@ -258,14 +258,30 @@ Fork Noosphere 拿内容，装 Spread 拿工具。两者独立，各取所需。
 
 ## 可选：配置脚本
 
-skill 附带两个 Python 脚本（纯标准库，无需 pip install）：
+skill 附带四个可执行 Python 脚本和一个公共模块，全部只使用标准库，无需安装依赖。脚本按 `{ROOT}/scripts/` 解析概念库路径；启用时需要把整个 `scripts/` 目录的 `.py` 文件复制到概念库根目录的 `scripts/` 下。在概念库根目录执行：
+
+```bash
+mkdir -p scripts
+cp skills/concept-studio-spread/scripts/*.py scripts/
+```
 
 | 脚本 | 作用 | 用法 |
 |------|------|------|
 | `scripts/sync_db.py` | SQLite 索引同步 | `python3 scripts/sync_db.py --incremental` |
+| `scripts/build_index.py` | 刷新 JSON 索引 | `python3 scripts/build_index.py --incremental` |
 | `scripts/lint_concepts.py` | 概念页格式质检 | `python3 scripts/lint_concepts.py --file 概念名` |
+| `scripts/check_duplicate.py` | 基于 JSON 索引查重 | `python3 scripts/check_duplicate.py 概念名` |
 
-**脚本不是必须的。** 不装也能正常使用所有功能——只是索引需要手动维护，质检需要人工检查。
+`sync_db.py` 同时提供正文学者索引查询：
+
+```bash
+python3 scripts/sync_db.py --scholar 康德
+python3 scripts/sync_db.py --scholar-in 先验统一性
+python3 scripts/sync_db.py --scholar-top
+python3 scripts/sync_db.py --scholar-collisions
+```
+
+**脚本不是必须的。** 不安装脚本仍可使用故事、摄入、跳跃、圆桌和卡片等写作流程；自动查重、结构化查询、学者索引和格式质检不可用。
 
 ---
 
@@ -286,7 +302,10 @@ concept-studio-spread/
 │   ├── cards.md             # 知识卡片模块
 │   └── write-page.md        # 概念页写入层（共享模块，不被直接触发）
 └── scripts/
-    ├── sync_db.py           # SQLite 同步脚本
+    ├── _common.py           # 公共解析与路径模块
+    ├── sync_db.py           # SQLite 同步与学者索引
+    ├── build_index.py       # JSON 索引生成
+    ├── check_duplicate.py   # 概念查重
     └── lint_concepts.py     # 质检脚本
 ```
 

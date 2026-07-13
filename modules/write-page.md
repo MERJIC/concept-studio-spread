@@ -21,7 +21,7 @@ description: "共享概念页写入模块。负责组装 frontmatter、写入文
 - `concept_en`：概念英文名
 - `domain`：顶层学科（从 page-spec.md 11 个固定值选，支持数组）
 - `source`：来源（page-spec.md 5 个固定值之一）
-- `tags`：完整标签数组（顺序：discipline/ → apply/ → person/）
+- `tags`：完整标签数组（顺序：discipline/ → apply/）
 - `核心机制`：正文
 - `入口场景`：正文
 - `现实锚点`：正文

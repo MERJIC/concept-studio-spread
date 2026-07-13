@@ -13,13 +13,13 @@
 设计原则：
   - 本模块不 import 同目录下其他脚本，避免循环依赖
   - 不包含业务逻辑（查重/lint/sync 各自管各自的）
-  - scholar 相关工具在 scholar_annotation_utils.py 中
+  - 学者名安全检查（build_short_unsafe、PROTECTED_PHRASES）
 """
 
 import json
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 # ══════════════════════════════════════════════════════════
 #  路径常量
@@ -45,6 +45,18 @@ _skill_modules_canditates = [
     os.path.join(SCRIPT_DIR, "..", "modules", "scholar-dict.json"),
 ]
 SCHOLAR_DICT_PATH = next((p for p in _skill_modules_canditates if os.path.exists(p)), _skill_modules_canditates[-1])
+
+# 非学者专有短语：短名不得在其中做子串替换
+PROTECTED_PHRASES = [
+    "星巴克",
+    "巴克莱",
+    "福克斯",
+    "扎克伯格",
+    "马尔克斯",
+    "帕克斯",
+    "尼克斯",
+    "明斯基",
+]
 
 # ══════════════════════════════════════════════════════════
 #  词汇表白名单（单一数据源）
@@ -177,27 +189,24 @@ def extract_wikilinks(content: str) -> List[str]:
 
 
 def parse_tags(tags_value) -> dict:
-    """拆分 tags 数组为 discipline / apply / person 三组。
+    """拆分 tags 数组为 discipline / apply 两组。
 
     参数可以是 list[str] 或 str（单值退化）。
-    返回 {"discipline": [...], "apply": [...], "persons": [...]}
+    返回 {"discipline": [...], "apply": [...]}
     """
     if isinstance(tags_value, str):
         tags_value = [tags_value]
 
     disciplines = []
     applies = []
-    persons = []
 
     for tag in tags_value:
         if tag.startswith("discipline/"):
             disciplines.append(tag[len("discipline/"):])
         elif tag.startswith("apply/"):
             applies.append(tag[len("apply/"):])
-        elif tag.startswith("person/"):
-            persons.append(tag[len("person/"):])
 
-    return {"discipline": disciplines, "apply": applies, "persons": persons}
+    return {"discipline": disciplines, "apply": applies}
 
 
 # ══════════════════════════════════════════════════════════
@@ -305,6 +314,27 @@ def load_scholar_dict() -> dict:
         return {}
     with open(SCHOLAR_DICT_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def build_short_unsafe(scholar_dict: dict) -> Set[str]:
+    """短名若出现在任一学者全名的真子串中，禁止短名自动替换。"""
+    unsafe: Set[str] = set()
+    full_names = [info["full"] for info in scholar_dict.values()]
+    for info in scholar_dict.values():
+        short = info.get("short", info["full"])
+        full = info["full"]
+        if not short or short == full:
+            continue
+        if len(short) <= 1:
+            unsafe.add(short)
+            continue
+        for other in full_names:
+            if other == full:
+                continue
+            if short in other and short != other:
+                unsafe.add(short)
+                break
+    return unsafe
 
 
 def atomic_write_json(path: str, data: dict, compact: bool = False) -> None:
