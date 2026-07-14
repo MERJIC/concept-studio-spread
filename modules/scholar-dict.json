@@ -59,6 +59,11 @@
     "en": "Gottfried Wilhelm Leibniz",
     "short": "莱布尼茨"
   },
+  "巴鲁赫·斯宾诺莎": {
+    "full": "巴鲁赫·斯宾诺莎",
+    "en": "Baruch Spinoza",
+    "short": "斯宾诺莎"
+  },
   "约翰·洛克": {
     "full": "约翰·洛克",
     "en": "John Locke",
@@ -174,6 +179,11 @@
     "full": "希拉里·普特南",
     "en": "Hilary Putnam",
     "short": "普特南"
+  },
+  "伊莱·赫希": {
+    "full": "伊莱·赫希",
+    "en": "Eli Hirsch",
+    "short": "赫希"
   },
   "唐纳德·戴维森": {
     "full": "唐纳德·戴维森",
@@ -1495,5 +1505,128 @@
     "full": "亨利·基伯格",
     "en": "Henry Kyburg",
     "short": "基伯格"
+  },
+  "罗伯特·西奥迪尼": {
+    "full": "罗伯特·西奥迪尼",
+    "en": "Robert Cialdini",
+    "short": "西奥迪尼"
+  },
+  "迈克尔·科恩": {
+    "full": "迈克尔·科恩",
+    "en": "Michael D. Cohen",
+    "short": "科恩",
+    "_note": "与政治人物科恩区分；管理学垃圾罐模型作者"
+  },
+  "约翰·奥尔森": {
+    "full": "约翰·奥尔森",
+    "en": "Johan P. Olsen",
+    "short": "奥尔森"
+  },
+  "阿尔文·古尔德纳": {
+    "full": "阿尔文·古尔德纳",
+    "en": "Alvin Gouldner",
+    "short": "古尔德纳"
+  },
+  "詹姆斯·迪恩": {
+    "full": "詹姆斯·迪恩",
+    "en": "James W. Dean Jr.",
+    "short": "迪恩",
+    "_note": "管理学组织犬儒主义研究者，与演员 James Dean 不同人"
+  },
+  "帕梅拉·布兰德斯": {
+    "full": "帕梅拉·布兰德斯",
+    "en": "Pamela Brandes",
+    "short": "布兰德斯"
+  },
+  "拉维·达尔瓦德卡": {
+    "full": "拉维·达尔瓦德卡",
+    "en": "Ravi Dharwadkar",
+    "short": "达尔瓦德卡"
+  },
+  "丹妮丝·卢梭": {
+    "full": "丹妮丝·卢梭",
+    "en": "Denise M. Rousseau",
+    "short": "卢梭",
+    "_note": "管理学心理契约研究者，与哲学家卢梭不同人"
+  },
+  "斯尼哈尔·蒂焦里瓦拉": {
+    "full": "斯尼哈尔·蒂焦里瓦拉",
+    "en": "Snehal A. Tijoriwala",
+    "short": "蒂焦里瓦拉"
+  },
+  "保罗·斯托尔茨": {
+    "full": "保罗·斯托尔茨",
+    "en": "Paul Stoltz",
+    "short": "斯托尔茨"
+  },
+  "约翰·希克": {
+    "full": "约翰·希克",
+    "en": "John Hick",
+    "short": "希克"
+  },
+  "伊里奈乌": {
+    "full": "伊里奈乌",
+    "en": "Irenaeus of Lyons",
+    "short": "伊里奈乌"
+  },
+  "理查德·泰德希": {
+    "full": "理查德·泰德希",
+    "en": "Richard Tedeschi",
+    "short": "泰德希"
+  },
+  "劳伦斯·卡尔霍恩": {
+    "full": "劳伦斯·卡尔霍恩",
+    "en": "Lawrence Calhoun",
+    "short": "卡尔霍恩"
+  },
+  "维克多·弗兰克尔": {
+    "full": "维克多·弗兰克尔",
+    "en": "Viktor Frankl",
+    "short": "弗兰克尔"
+  },
+  "琼·弗里德曼": {
+    "full": "琼·弗里德曼",
+    "en": "Jonathon Freedman",
+    "short": "弗里德曼"
+  },
+  "斯科特·弗雷泽": {
+    "full": "斯科特·弗雷泽",
+    "en": "Scott Fraser",
+    "short": "弗雷泽"
+  },
+  "乔尔·布罗克纳": {
+    "full": "乔尔·布罗克纳",
+    "en": "Joel Brockner",
+    "short": "布罗克纳"
+  },
+  "杰里·伯格": {
+    "full": "杰里·伯格",
+    "en": "Jerry Burger",
+    "short": "伯格"
+  },
+  "约翰·卡乔波": {
+    "full": "约翰·卡乔波",
+    "en": "John Cacioppo",
+    "short": "卡乔波"
+  },
+  "雷蒙德·巴塞特": {
+    "full": "雷蒙德·巴塞特",
+    "en": "Raymond Bassett",
+    "short": "巴塞特"
+  },
+  "约翰·米勒": {
+    "full": "约翰·米勒",
+    "en": "John Miller",
+    "short": "米勒"
+  },
+  "赫什·谢夫林": {
+    "full": "赫什·谢夫林",
+    "en": "Hersh Shefrin",
+    "short": "谢夫林"
+  },
+  "克劳斯·韦滕布罗赫": {
+    "full": "克劳斯·韦滕布罗赫",
+    "en": "Klaus Wertenbroch",
+    "short": "韦滕布罗赫"
   }
 }
