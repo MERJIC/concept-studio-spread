@@ -646,7 +646,8 @@ def _refresh_scholar_index() -> dict:
 
         # 写入 scholar_mentions 表
         for display_name, data in scholar_accum.items():
-            cursor.execute("SELECT id FROM scholars WHERE short_name = ?", (data["short"],))
+            # full_name 在表中唯一；short_name 可能重名（如两位布鲁克斯）。
+            cursor.execute("SELECT id FROM scholars WHERE full_name = ?", (data["full"],))
             row = cursor.fetchone()
             if not row:
                 continue
