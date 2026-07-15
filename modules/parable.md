@@ -127,6 +127,7 @@ python3 scripts/sync_db.py -d "候选1名" "英文名1" "候选2名" "英文名2
 - 入口场景：Step 2 产生的完整寓言正文（300-500 字，概念名隐藏）
 - 核心机制、现实锚点、适用边界：基于 Step 3 揭示的原理，按 `modules/page-spec.md` 各章节的写作规范生成
 - 元数据：domain（从固定词汇表选）、source=寓言故事、tags（discipline/ → apply/）
+- `scholar_refs`：核心机制中引用的所有学者或思想家。每条包含 `full_cn`（中文全名）、`en`（英文原名）、`year`（代表年份或论文年份）、`key_claim`（归因于该学者的核心论断，供搜索核验）
 
 然后读取 `modules/write-page.md`，按**模式 A**执行写入、自检、lint、同步。
 

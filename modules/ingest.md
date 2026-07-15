@@ -16,7 +16,7 @@ description: "从 URL 或粘贴文本中提取学术/理论概念，生成标准
 
 ### Step 1 — 获取内容
 
-**URL 输入**：用 `mcp__web-search__web_search` 搜索 URL 对应的内容，或请用户提供页面正文。不依赖 WebFetch（该工具在当前环境不可用）。
+**URL 输入**：使用当前 Agent 可用的网页读取或搜索能力获取 URL 内容；如果无法访问，再请用户提供页面正文。不要绑定某个平台的专用工具名称。
 **文本输入**：直接使用用户粘贴的内容，无需额外处理。
 
 ### Step 2 — 概念提取
@@ -75,7 +75,8 @@ python3 scripts/sync_db.py -d "候选1名" "英文名1" "候选2名" "英文名2
    - 其他来源：2-5 句场景片段。
 2. **准备其余章节**：按 `modules/page-spec.md` 各章节的写作规范生成核心机制、现实锚点、适用边界
 3. **确定元数据**：domain（从固定词汇表选）、source、tags（discipline/ → apply/）
-4. 读取 `modules/write-page.md`，按**模式 A**执行写入、自检、lint、同步
+4. **准备 `scholar_refs`**：核心机制中引用的所有学者或思想家。每条包含 `full_cn`（中文全名）、`en`（英文原名）、`year`（代表年份或论文年份）、`key_claim`（归因于该学者的核心论断，供搜索核验）
+5. 读取 `modules/write-page.md`，按**模式 A**执行写入、自检、lint、同步
 
 多个概念逐个处理，每个写完后输出确认，再处理下一个。
 
